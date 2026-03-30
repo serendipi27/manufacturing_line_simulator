@@ -13,17 +13,49 @@ from typing import List
 
 st.set_page_config(page_title="제조공정 병목 시뮬레이터", layout="wide")
 
-# ------------------------------
-# 한글 폰트 설정
-# ------------------------------
-# 실행 환경에 따라 사용 가능한 폰트가 다를 수 있으므로 순차적으로 시도
-plt.rcParams["axes.unicode_minus"] = False
-for font_name in ["Malgun Gothic", "AppleGothic", "NanumGothic", "DejaVu Sans"]:
-    try:
-        plt.rcParams["font.family"] = font_name
-        break
-    except Exception:
-        pass
+# # ------------------------------
+# # 한글 폰트 설정
+# # ------------------------------
+# # 실행 환경에 따라 사용 가능한 폰트가 다를 수 있으므로 순차적으로 시도
+# plt.rcParams["axes.unicode_minus"] = False
+# for font_name in ["Malgun Gothic", "AppleGothic", "NanumGothic", "DejaVu Sans"]:
+#     try:
+#         plt.rcParams["font.family"] = font_name
+#         break
+#     except Exception:
+#         pass
+
+import streamlit as st
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import os
+
+# 1. 한글 폰트 설정 (리눅스 배포 환경 및 로컬 환경 대응)
+def set_korean_font():
+    # 리눅스(Streamlit Cloud) 패키지 설치 경로
+    linux_font_path = '/usr/share/fonts/truetype/nanum/NanumGothic.ttf'
+    # 윈도우/맥 등 로컬 테스트용 일반적인 폰트 이름들
+    font_names = ["Malgun Gothic", "AppleGothic", "NanumGothic", "DejaVu Sans"]
+
+    if os.path.exists(linux_font_path):
+        # 배포 환경: 경로를 직접 지정하여 폰트 등록
+        font_prop = fm.FontProperties(fname=linux_font_path)
+        plt.rcParams["font.family"] = font_prop.get_name()
+    else:
+        # 로컬 환경: 리스트를 순회하며 폰트 설정
+        for font_name in font_names:
+            try:
+                fm.findfont(font_name, rebuild_if_missing=True)
+                plt.rcParams["font.family"] = font_name
+                break
+            except:
+                continue
+    
+    # 마이너스 기호 깨짐 방지
+    plt.rcParams["axes.unicode_minus"] = False
+
+# 폰트 설정 실행
+set_korean_font()
 
 
 @dataclass
