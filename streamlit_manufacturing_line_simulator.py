@@ -1,10 +1,11 @@
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+import os
 from dataclasses import dataclass
 from typing import List
+
+import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
 
 # ==============================
 # 제조공정 병목 시뮬레이터 (교육용)
@@ -13,48 +14,30 @@ from typing import List
 
 st.set_page_config(page_title="제조공정 병목 시뮬레이터", layout="wide")
 
-# # ------------------------------
-# # 한글 폰트 설정
-# # ------------------------------
-# # 실행 환경에 따라 사용 가능한 폰트가 다를 수 있으므로 순차적으로 시도
-# plt.rcParams["axes.unicode_minus"] = False
-# for font_name in ["Malgun Gothic", "AppleGothic", "NanumGothic", "DejaVu Sans"]:
-#     try:
-#         plt.rcParams["font.family"] = font_name
-#         break
-#     except Exception:
-#         pass
 
-import streamlit as st
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
-import os
-
-# 1. 한글 폰트 설정 (리눅스 배포 환경 및 로컬 환경 대응)
+# ------------------------------
+# 한글 폰트 설정
+# ------------------------------
 def set_korean_font():
-    # 리눅스(Streamlit Cloud) 패키지 설치 경로
-    linux_font_path = '/usr/share/fonts/truetype/nanum/NanumGothic.ttf'
-    # 윈도우/맥 등 로컬 테스트용 일반적인 폰트 이름들
+    """리눅스 배포 환경 및 로컬 환경을 모두 고려한 한글 폰트 설정"""
+    linux_font_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
     font_names = ["Malgun Gothic", "AppleGothic", "NanumGothic", "DejaVu Sans"]
 
     if os.path.exists(linux_font_path):
-        # 배포 환경: 경로를 직접 지정하여 폰트 등록
         font_prop = fm.FontProperties(fname=linux_font_path)
         plt.rcParams["font.family"] = font_prop.get_name()
     else:
-        # 로컬 환경: 리스트를 순회하며 폰트 설정
         for font_name in font_names:
             try:
                 fm.findfont(font_name, rebuild_if_missing=True)
                 plt.rcParams["font.family"] = font_name
                 break
-            except:
+            except Exception:
                 continue
-    
-    # 마이너스 기호 깨짐 방지
+
     plt.rcParams["axes.unicode_minus"] = False
 
-# 폰트 설정 실행
+
 set_korean_font()
 
 
@@ -68,19 +51,18 @@ class StageResult:
     completed: int
 
 
+# ------------------------------
+# 세션 상태 관리
+# ------------------------------
 def initialize_session_state():
-    if "current_kpis" not in st.session_state:
-        st.session_state.current_kpis = None
-    if "previous_kpis" not in st.session_state:
-        st.session_state.previous_kpis = None
+    if "current_simulation_result" not in st.session_state:
+        st.session_state.current_simulation_result = None
+    if "previous_simulation_result" not in st.session_state:
+        st.session_state.previous_simulation_result = None
 
 
-def save_kpis_to_session(summary: dict):
-    # 현재 결과가 이미 있으면 previous로 이동
-    if st.session_state.current_kpis is not None:
-        st.session_state.previous_kpis = st.session_state.current_kpis.copy()
-
-    st.session_state.current_kpis = {
+def build_kpis(summary: dict) -> dict:
+    return {
         "총 완료시간(Makespan)": round(summary["makespan"], 2),
         "평균 리드타임": round(summary["avg_lead_time"], 2),
         "Throughput": round(summary["throughput"], 3),
@@ -88,6 +70,37 @@ def save_kpis_to_session(summary: dict):
     }
 
 
+
+def save_simulation_to_session(df: pd.DataFrame, lead_df: pd.DataFrame, result_df: pd.DataFrame, summary: dict):
+    """
+    버튼을 눌러 새 시뮬레이션을 실행한 순간에만:
+    1) 기존 current 결과를 previous로 이동
+    2) 새 결과를 current에 저장
+    """
+    new_result = {
+        "df": df.copy(),
+        "lead_df": lead_df.copy(),
+        "result_df": result_df.copy(),
+        "summary": summary.copy(),
+        "kpis": build_kpis(summary),
+    }
+
+    if st.session_state.current_simulation_result is not None:
+        current_result = st.session_state.current_simulation_result
+        st.session_state.previous_simulation_result = {
+            "df": current_result["df"].copy(),
+            "lead_df": current_result["lead_df"].copy(),
+            "result_df": current_result["result_df"].copy(),
+            "summary": current_result["summary"].copy(),
+            "kpis": current_result["kpis"].copy(),
+        }
+
+    st.session_state.current_simulation_result = new_result
+
+
+# ------------------------------
+# 시뮬레이션 로직
+# ------------------------------
 def simulate_line(process_times: List[float], arrival_interval: float, num_jobs: int):
     """
     단순 직렬 생산라인 시뮬레이션
@@ -95,18 +108,12 @@ def simulate_line(process_times: List[float], arrival_interval: float, num_jobs:
     - 각 공정은 동시에 1개 작업만 처리 가능
     - 작업은 일정 간격으로 투입
     """
-
     n_stages = len(process_times)
-    stage_names = [f"공정 {chr(65+i)}" for i in range(n_stages)]
-
-    # 각 공정의 다음 가능 시간
+    stage_names = [f"공정 {chr(65 + i)}" for i in range(n_stages)]
     stage_available = [0.0] * n_stages
 
     records = []
-
-    # 큐 길이 계산용 이벤트
     queue_events = {name: [] for name in stage_names}
-    wait_times_by_stage = {name: [] for name in stage_names}
 
     for job_id in range(1, num_jobs + 1):
         release_time = (job_id - 1) * arrival_interval
@@ -118,11 +125,8 @@ def simulate_line(process_times: List[float], arrival_interval: float, num_jobs:
             finish_time = start_time + p_time
             wait_time = start_time - prev_finish
 
-            # 큐 길이 계산용 이벤트 기록
             queue_events[stage_name].append((prev_finish, +1))
             queue_events[stage_name].append((start_time, -1))
-
-            wait_times_by_stage[stage_name].append(wait_time)
 
             records.append(
                 {
@@ -153,7 +157,6 @@ def simulate_line(process_times: List[float], arrival_interval: float, num_jobs:
         utilization = busy_time / makespan if makespan > 0 else 0
         avg_wait = sdf["wait_time"].mean()
 
-        # 최대 큐 길이 계산
         events = sorted(queue_events[stage_name], key=lambda x: (x[0], -x[1]))
         q = 0
         max_q = 0
@@ -172,7 +175,6 @@ def simulate_line(process_times: List[float], arrival_interval: float, num_jobs:
             )
         )
 
-    # 작업별 리드타임
     lead_df = (
         df.groupby("job_id")
         .agg(release_time=("release_time", "min"), finish_time=("finish_time", "max"))
@@ -194,9 +196,11 @@ def simulate_line(process_times: List[float], arrival_interval: float, num_jobs:
     return df, lead_df, result_df, summary
 
 
+# ------------------------------
+# 시각화 함수
+# ------------------------------
 def draw_gantt(df: pd.DataFrame):
     jobs = sorted(df["job_id"].unique())
-
     fig, ax = plt.subplots(figsize=(12, 6))
 
     for _, row in df.iterrows():
@@ -226,6 +230,7 @@ def draw_gantt(df: pd.DataFrame):
     return fig
 
 
+
 def draw_stage_metrics(result_df: pd.DataFrame):
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
@@ -246,12 +251,15 @@ def draw_stage_metrics(result_df: pd.DataFrame):
     return fig
 
 
+# ------------------------------
+# UI 렌더링 함수
+# ------------------------------
 def build_stage_editor(defaults: List[float]):
     st.sidebar.markdown("## 공정 파라미터 설정")
     p_times = []
     for i, d in enumerate(defaults):
         value = st.sidebar.slider(
-            f"공정 {chr(65+i)} 처리시간",
+            f"공정 {chr(65 + i)} 처리시간",
             min_value=1.0,
             max_value=15.0,
             value=float(d),
@@ -261,72 +269,31 @@ def build_stage_editor(defaults: List[float]):
     return p_times
 
 
+
 def render_previous_kpis_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("## 이전 시뮬레이션 결과")
 
-    if st.session_state.previous_kpis is None:
-        st.sidebar.info("아직 비교할 이전 실행 결과가 없습니다. 두 번째 실행부터 표시됩니다.")
+    previous_result = st.session_state.previous_simulation_result
+    if previous_result is None:
+        st.sidebar.info("아직 이전 실행 결과가 없습니다. 두 번째 실행부터 표시됩니다.")
         return
 
     prev_df = pd.DataFrame(
         {
-            "KPI": list(st.session_state.previous_kpis.keys()),
-            "값": list(st.session_state.previous_kpis.values()),
+            "KPI": list(previous_result["kpis"].keys()),
+            "값": list(previous_result["kpis"].values()),
         }
     )
     st.sidebar.dataframe(prev_df, use_container_width=True, hide_index=True)
 
 
-initialize_session_state()
 
-st.title("제조공정 병목 시뮬레이터")
-st.markdown(
-    """
-이 웹앱은 **공정 흐름, 병목, 대기, 가동률** 개념을 직접 조작하며 학습하기 위한 교육용 도구입니다.
-
-### 사용 방법
-1. 왼쪽 사이드바에서 공정별 처리시간과 작업 투입 간격을 조절합니다.
-2. **시뮬레이션 실행** 버튼을 누릅니다.
-3. 결과 대시보드에서 병목 공정, 대기시간, 가동률 변화를 관찰합니다.
-4. "어떤 공정을 개선해야 전체 생산성이 올라가는가?"를 예측한 뒤 직접 확인합니다.
-"""
-)
-
-with st.sidebar:
-    st.markdown("## 실습 시나리오")
-    scenario = st.selectbox(
-        "실습 모드 선택",
-        [
-            "기본 라인",
-            "병목 공정 개선",
-            "비병목 공정 개선",
-            "전체 속도 향상",
-        ],
-    )
-
-    if scenario == "기본 라인":
-        defaults = [3.0, 5.0, 2.0, 3.0]
-    elif scenario == "병목 공정 개선":
-        defaults = [3.0, 3.0, 2.0, 3.0]
-    elif scenario == "비병목 공정 개선":
-        defaults = [2.0, 5.0, 2.0, 2.0]
-    else:
-        defaults = [2.5, 4.0, 1.5, 2.5]
-
-process_times = build_stage_editor(defaults)
-
-with st.sidebar:
-    arrival_interval = st.slider("작업 투입 간격", 1.0, 10.0, 2.0, 0.5)
-    num_jobs = st.slider("총 작업 수", 5, 50, 20, 1)
-    run_button = st.button("시뮬레이션 실행", use_container_width=True)
-
-# 이전 시뮬레이션 결과 표시
-render_previous_kpis_sidebar()
-
-if run_button:
-    df, lead_df, result_df, summary = simulate_line(process_times, arrival_interval, num_jobs)
-    save_kpis_to_session(summary)
+def render_main_result(result: dict):
+    df = result["df"]
+    lead_df = result["lead_df"]
+    result_df = result["result_df"]
+    summary = result["summary"]
 
     st.markdown("---")
     st.subheader("1. 핵심 결과 요약")
@@ -353,7 +320,7 @@ if run_button:
     )
 
     st.info(
-        "핵심 해석: 병목 공정을 개선하지 않으면 다른 공정을 개선해도 전체 성능 향상은 제한적입니다."
+        "메인 화면은 방금 또는 마지막으로 '시뮬레이션 실행' 버튼을 눌러 확정된 결과입니다. 사이드바에는 그 직전 실행 결과가 표시됩니다."
     )
 
     left, right = st.columns([1.1, 1])
@@ -373,13 +340,11 @@ if run_button:
             ),
             use_container_width=True,
         )
-        fig_metrics = draw_stage_metrics(result_df)
-        st.pyplot(fig_metrics)
+        st.pyplot(draw_stage_metrics(result_df))
 
     with right:
         st.subheader("3. 작업 흐름 간트 차트")
-        fig_gantt = draw_gantt(df)
-        st.pyplot(fig_gantt)
+        st.pyplot(draw_gantt(df))
 
     st.subheader("4. 작업별 리드타임")
     st.line_chart(lead_df.set_index("job_id")["lead_time"])
@@ -404,5 +369,66 @@ if run_button:
 4. 두 결과를 비교해서 "어디를 개선해야 하는가"를 정리합니다.
 """
     )
+
+
+# ------------------------------
+# 앱 본문
+# ------------------------------
+initialize_session_state()
+
+st.title("제조공정 병목 시뮬레이터")
+st.markdown(
+    """
+이 웹앱은 **공정 흐름, 병목, 대기, 가동률** 개념을 직접 조작하며 학습하기 위한 교육용 도구입니다.
+
+### 사용 방법
+1. 왼쪽 사이드바에서 공정별 처리시간과 작업 투입 간격을 조절합니다.
+2. **시뮬레이션 실행** 버튼을 누릅니다.
+3. 메인 화면에는 방금 실행한 결과가 표시됩니다.
+4. 사이드바의 **이전 시뮬레이션 결과**와 비교하면서 병목 개선 효과를 확인합니다.
+"""
+)
+
+with st.sidebar:
+    st.markdown("## 실습 시나리오")
+    scenario = st.selectbox(
+        "실습 모드 선택",
+        [
+            "기본 라인",
+            "병목 공정 개선",
+            "비병목 공정 개선",
+            "전체 속도 향상",
+        ],
+    )
+
+if scenario == "기본 라인":
+    defaults = [3.0, 5.0, 2.0, 3.0]
+elif scenario == "병목 공정 개선":
+    defaults = [3.0, 3.0, 2.0, 3.0]
+elif scenario == "비병목 공정 개선":
+    defaults = [2.0, 5.0, 2.0, 2.0]
+else:
+    defaults = [2.5, 4.0, 1.5, 2.5]
+
+process_times = build_stage_editor(defaults)
+
+with st.sidebar:
+    arrival_interval = st.slider("작업 투입 간격", 1.0, 10.0, 2.0, 0.5)
+    num_jobs = st.slider("총 작업 수", 5, 50, 20, 1)
+    run_button = st.button("시뮬레이션 실행", use_container_width=True)
+
+# 중요: 버튼 클릭 시 먼저 세션 상태를 갱신한 뒤,
+# 그 다음 사이드바와 메인 화면을 렌더링해야 현재/이전 결과가 올바르게 보인다.
+if run_button:
+    df, lead_df, result_df, summary = simulate_line(process_times, arrival_interval, num_jobs)
+    save_simulation_to_session(df, lead_df, result_df, summary)
+
+# 사이드바에는 직전 실행 결과 표시
+render_previous_kpis_sidebar()
+
+# 메인 화면에는 현재(가장 마지막 실행) 결과 표시
+current_result = st.session_state.current_simulation_result
+if current_result is not None:
+    render_main_result(current_result)
 else:
     st.markdown("### 왼쪽에서 파라미터를 조절한 뒤 **시뮬레이션 실행** 버튼을 눌러주세요.")
